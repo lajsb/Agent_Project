@@ -1,6 +1,6 @@
 """Document loaders - 基于 LangChain 的文档加载封装
 
-支持格式: txt, md, markdown, pdf, docx, doc
+支持格式: txt, md, markdown, pdf, docx, doc, json, py, js, ts, html, css
 """
 
 import os
@@ -12,7 +12,20 @@ from langchain_community.document_loaders import TextLoader, PyPDFLoader, Docx2t
 
 
 # 支持的文件扩展名
-SUPPORTED_EXTENSIONS = {".txt", ".md", ".markdown", ".pdf", ".docx", ".doc"}
+SUPPORTED_EXTENSIONS = {
+    ".txt",
+    ".md",
+    ".markdown",
+    ".pdf",
+    ".docx",
+    ".doc",
+    ".json",
+    ".py",
+    ".js",
+    ".ts",
+    ".html",
+    ".css",
+}
 
 
 def load_document(file_path: Union[str, Path]) -> List[LangChainDocument]:
@@ -43,8 +56,8 @@ def load_document(file_path: Union[str, Path]) -> List[LangChainDocument]:
         loader = PyPDFLoader(str(path))
     elif suffix in (".docx", ".doc"):
         loader = Docx2txtLoader(str(path))
-    else:  # .txt, .md, .markdown
-        loader = TextLoader(str(path))
+    else:  # .txt, .md, .markdown, .py, .js, .ts, .html, .css, .json
+        loader = TextLoader(str(path), encoding="utf-8")
 
     documents = loader.load()
 
@@ -107,12 +120,24 @@ def _extract_metadata(path: Path, suffix: str) -> Dict[str, Any]:
     """提取文件元数据"""
     stat = path.stat()
 
+    # 代码文件类型映射
+    CODE_TYPES = {
+        ".py": "python",
+        ".js": "javascript",
+        ".ts": "typescript",
+        ".html": "html",
+        ".css": "css",
+        ".json": "json",
+    }
+
     if suffix in (".md", ".markdown"):
         doc_type = "markdown"
     elif suffix == ".pdf":
         doc_type = "pdf"
     elif suffix in (".docx", ".doc"):
         doc_type = "word"
+    elif suffix in CODE_TYPES:
+        doc_type = CODE_TYPES[suffix]
     else:
         doc_type = "text"
 

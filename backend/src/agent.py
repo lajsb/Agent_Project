@@ -35,7 +35,11 @@ def rag_tool_func(query: str) -> str:
         基于知识库的答案
     """
     try:
+        print(f"[DEBUG] RAG tool called with query: {query[:50]}...")
         result = run_rag(query)
+        print(
+            f"[DEBUG] RAG result: {result.get('route', 'unknown')}, docs: {result.get('docs_count', 0)}"
+        )
 
         # 构建工具返回结果
         answer = result.get("answer", "")
@@ -47,6 +51,10 @@ def rag_tool_func(query: str) -> str:
         return answer + debug_info
 
     except Exception as e:
+        import traceback
+
+        error_detail = traceback.format_exc()
+        print(f"[ERROR] RAG tool error: {e}\n{error_detail}")
         return f"检索知识库时出错: {str(e)}"
 
 
@@ -76,21 +84,25 @@ def create_agent_instance():
     """
     创建Agent实例
     """
-    # 初始化LLM模型
-    model = init_chat_model(
-        model=os.getenv("LLM_MODEL", "gpt-4-0613"),
-        model_provider=os.getenv("LLM_PROVIDER", "openai"),
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL"),
-        temperature=0.7,
-        stream_usage=True,
-    )
+    try:
+        print("[DEBUG] Creating agent instance...")
+        # 初始化LLM模型
+        model = init_chat_model(
+            model=os.getenv("LLM_MODEL", "gpt-4-0613"),
+            model_provider=os.getenv("LLM_PROVIDER", "openai"),
+            api_key=os.getenv("OPENAI_API_KEY"),
+            base_url=os.getenv("OPENAI_BASE_URL"),
+            temperature=0.7,
+            stream_usage=True,
+        )
+        print(f"[DEBUG] LLM model initialized: {os.getenv('LLM_MODEL', 'gpt-4-0613')}")
 
-    # 定义工具列表
-    tools = [rag_tool]
+        # 定义工具列表
+        tools = [rag_tool]
+        print(f"[DEBUG] Tools initialized: {[t.name for t in tools]}")
 
-    # 创建系统提示
-    system_prompt = """你是一个智能助手，擅长回答各种问题。
+        # 创建系统提示
+        system_prompt = """你是一个智能助手，擅长回答各种问题。
 
 你有以下工具可用:
 1. knowledge_base_search - 知识库检索工具
@@ -105,10 +117,17 @@ def create_agent_instance():
 始终保持友好、专业的态度。
 """
 
-    # 使用 create_react_agent 创建 Agent (新版 LangGraph)
-    agent_executor = create_react_agent(model, tools, prompt=system_prompt)
+        # 使用 create_react_agent 创建 Agent (新版 LangGraph)
+        agent_executor = create_react_agent(model, tools, prompt=system_prompt)
+        print("[DEBUG] Agent executor created successfully")
 
-    return model, agent_executor
+        return model, agent_executor
+    except Exception as e:
+        import traceback
+
+        print(f"[ERROR] Failed to create agent: {e}")
+        traceback.print_exc()
+        raise
 
 
 # 全局Agent实例（按需初始化）
@@ -119,7 +138,13 @@ def get_agent():
     """获取或创建Agent实例（单例模式）"""
     global _agent_instance
     if _agent_instance is None:
-        _, _agent_instance = create_agent_instance()
+        print("[DEBUG] Creating new agent instance...")
+        try:
+            _, _agent_instance = create_agent_instance()
+            print("[DEBUG] Agent instance created successfully")
+        except Exception as e:
+            print(f"[ERROR] Failed to create agent instance: {e}")
+            raise
     return _agent_instance
 
 
@@ -227,9 +252,7 @@ _memory_store = PersistentMemory(db_connection)
 # ==================== 对话函数 ====================
 
 
-def chat_with_agent(
-    query: str, user_id: str = "default", session_id: str = "default"
-) -> dict:
+def chat_with_agent(query: str, user_id: str = "default", session_id: str = "default") -> dict:
     """
     与Agent对话
 
@@ -241,21 +264,41 @@ def chat_with_agent(
     Returns:
         包含回答和元信息的字典
     """
-    agent = get_agent()
-
-    # 获取对话历史
-    chat_history = _memory_store.get_history(user_id, session_id)
-
     try:
+        agent = get_agent()
+
+        # 获取对话历史
+        chat_history = _memory_store.get_history(user_id, session_id)
+        print(f"[DEBUG] Got {len(chat_history)} history messages")
+
+        # 确保历史记录格式正确
+        formatted_history = []
+        for msg in chat_history:
+            if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                formatted_history.append({"role": msg["role"], "content": msg["content"]})
+            else:
+                print(f"[WARN] Skipping invalid history message: {msg}")
+
+        print(f"[DEBUG] Formatted {len(formatted_history)} history messages")
         # 调用Agent (新版 LangGraph create_react_agent)
-        response = agent.invoke(
-            {"messages": chat_history + [{"role": "user", "content": query}]}
-        )
+        messages = formatted_history + [{"role": "user", "content": query}]
+        print(f"[DEBUG] Sending {len(messages)} messages to agent")
+        print(f"[DEBUG] Message format: {messages}")
+
+        try:
+            response = agent.invoke({"messages": messages})
+            print(f"[DEBUG] Agent response received: {type(response)}")
+        except Exception as agent_error:
+            import traceback
+
+            print(f"[ERROR] Agent invoke failed: {agent_error}")
+            traceback.print_exc()
+            raise agent_error
 
         # 从响应中提取最后一条消息的内容
-        messages = response.get("messages", [])
-        if messages:
-            last_message = messages[-1]
+        response_messages = response.get("messages", [])
+        if response_messages:
+            last_message = response_messages[-1]
             answer = getattr(last_message, "content", str(last_message))
         else:
             answer = "抱歉，我没有理解您的问题。"
@@ -347,9 +390,7 @@ def get_conversation_history(
         session.close()
 
 
-def list_user_conversations(
-    user_id: str, limit: int = 50, offset: int = 0
-) -> Dict[str, Any]:
+def list_user_conversations(user_id: str, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
     """
     获取用户的所有会话列表
 
@@ -364,9 +405,7 @@ def list_user_conversations(
     session = db_connection.get_session()
     try:
         service = MemoryService(session)
-        conversations = service.get_user_conversations(
-            user_id, limit=limit, offset=offset
-        )
+        conversations = service.get_user_conversations(user_id, limit=limit, offset=offset)
 
         return {
             "success": True,

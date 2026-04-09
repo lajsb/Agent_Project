@@ -36,18 +36,33 @@ class MemoryService:
 
         return memory.to_dict()
 
-    def get_conversation_history(self, session_id: str, limit: int = 100) -> List[Dict]:
-        """获取对话历史"""
+    def get_conversation_history(
+        self, session_id: str, limit: int = 100, include_system: bool = True
+    ) -> List[Dict]:
+        """获取对话历史
+
+        Args:
+            session_id: 会话ID
+            limit: 返回的最大消息数
+            include_system: 是否包含系统消息，默认为True
+
+        Returns:
+            消息列表
+        """
         memories = self.repo.get_by_session(session_id, limit)
-        return [m.to_dict() for m in memories]
+        result = [m.to_dict() for m in memories]
+
+        # 如果不包含系统消息，过滤掉role为system的记录
+        if not include_system:
+            result = [m for m in result if m.get("role") != "system"]
+
+        return result
 
     def get_user_sessions(self, user_id: str, limit: int = 50) -> List[str]:
         """获取用户的所有会话ID"""
         return self.repo.get_user_sessions(user_id, limit)
 
-    def get_user_conversations(
-        self, user_id: str, limit: int = 50, offset: int = 0
-    ) -> List[Dict]:
+    def get_user_conversations(self, user_id: str, limit: int = 50, offset: int = 0) -> List[Dict]:
         """获取用户的所有会话列表"""
         sessions = self.repo.get_user_sessions(user_id, limit + offset)
         conversations = []
@@ -71,9 +86,7 @@ class MemoryService:
                     "message_count": stats["message_count"],
                     "last_message": last_message.content[:100] if last_message else "",
                     "last_role": last_message.role if last_message else "",
-                    "updated_at": last_message.created_at.isoformat()
-                    if last_message
-                    else None,
+                    "updated_at": last_message.created_at.isoformat() if last_message else None,
                 }
             )
 
@@ -83,9 +96,7 @@ class MemoryService:
         """清空对话历史"""
         return self.repo.clear_session(session_id)
 
-    def search_conversations(
-        self, query: str, user_id: str = None, limit: int = 20
-    ) -> List[Dict]:
+    def search_conversations(self, query: str, user_id: str = None, limit: int = 20) -> List[Dict]:
         """搜索对话内容"""
         results = self.repo.search_by_content(query, user_id, limit)
         return [r.to_dict() for r in results]

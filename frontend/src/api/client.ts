@@ -124,6 +124,16 @@ class APIClient {
     return response.data;
   }
 
+  async clearCollection(collectionName: string): Promise<{ success: boolean; deleted_count: number; message: string }> {
+    const response = await this.client.post<{ success: boolean; deleted_count: number; message: string }>(`/documents/clear/${collectionName}`);
+    return response.data;
+  }
+
+  async getCollectionSources(collectionName: string): Promise<{ success: boolean; collection: string; sources: string[]; total: number }> {
+    const response = await this.client.get<{ success: boolean; collection: string; sources: string[]; total: number }>(`/documents/sources/${collectionName}`);
+    return response.data;
+  }
+
   async listCollections(): Promise<CollectionsResponse> {
     const response = await this.client.get<CollectionsResponse>('/documents/collections');
     return response.data;

@@ -2,7 +2,6 @@ from typing import TypedDict, List, Optional, Literal
 from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
-from backend.milvus.client import MilvusClient
 from backend.src.embeddings import DashScopeEmbeddings
 import json
 import os
@@ -66,9 +65,7 @@ class RAGstate(TypedDict):
 embeddings = DashScopeEmbeddings(
     model=os.getenv("EMBEDDING_MODEL", "text-embedding-v3"),
     api_key=os.getenv("EMBEDDING_API_KEY"),
-    base_url=os.getenv(
-        "EMBEDDING_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    ),
+    base_url=os.getenv("EMBEDDING_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
 )
 
 # LLM模型 - 使用 Moonshot (OpenAI 兼容模式)
@@ -176,9 +173,7 @@ def grade_documents_node(state: RAGstate) -> RAGstate:
 
         try:
             # 使用结构化输出进行评分
-            result = grade_llm.invoke(
-                grade_prompt.format(question=question, content=content)
-            )
+            result = grade_llm.invoke(grade_prompt.format(question=question, content=content))
 
             doc["is_relevant"] = result.binary_score.lower() == "yes"
             doc["grade_reason"] = result.reason
@@ -352,9 +347,7 @@ def _apply_complex_strategy(state: RAGstate, question: str) -> RAGstate:
 """
 
     try:
-        result = hyde_llm.invoke(
-            hyde_prompt.format(question=question, context=step_back_context)
-        )
+        result = hyde_llm.invoke(hyde_prompt.format(question=question, context=step_back_context))
 
         state["hypothetical_doc"] = result.hypothetical_document
 
@@ -383,9 +376,9 @@ def retrieve_expanded(state: RAGstate) -> RAGstate:
 
     try:
         # 使用新的 Milvus 客户端
-        from backend.milvus.client import MilvusClient
+        from backend.milvus.client import get_milvus_client
 
-        client = MilvusClient()
+        client = get_milvus_client()
 
         # 使用扩展查询进行检索（增加top_k以获取更多候选）
         results = client.search(
@@ -452,10 +445,7 @@ def retrieve_expanded(state: RAGstate) -> RAGstate:
         # 出错时保留原始上下文
         if "context" not in state or not state["context"]:
             context = "\n\n".join(
-                [
-                    f"[Document {i + 1}] {doc['content']}"
-                    for i, doc in enumerate(original_docs)
-                ]
+                [f"[Document {i + 1}] {doc['content']}" for i, doc in enumerate(original_docs)]
             )
             state["context"] = context
         state["rag_trace"]["step"] = "expanded_retrieval"

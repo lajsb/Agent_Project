@@ -21,9 +21,7 @@ _CONNECTION_ESTABLISHED = False
 class MilvusClientWrapper:
     """Milvus 客户端包装器"""
 
-    def __init__(
-        self, host: str = "localhost", port: int = 19530, alias: str = "default"
-    ):
+    def __init__(self, host: str = "localhost", port: int = 19530, alias: str = "default"):
         self.host = host
         self.port = port
         self.alias = alias
@@ -259,9 +257,7 @@ class MilvusClientWrapper:
                     "source": hit.entity.get("source"),
                     "doc_type": hit.entity.get("doc_type"),
                     "distance": hit.distance,
-                    "score": 1 - hit.distance
-                    if hit.distance <= 1
-                    else 1 / (1 + hit.distance),
+                    "score": 1 - hit.distance if hit.distance <= 1 else 1 / (1 + hit.distance),
                 }
                 formatted_results.append(result)
 
@@ -277,13 +273,46 @@ class MilvusClientWrapper:
             return 0
 
         collection = Collection(collection_name, using=self.alias)
+        collection.load()
 
-        # 构建删除表达式
-        expr = f'source == "{source}"'
-        result = collection.delete(expr)
+        try:
+            # 先查询该 source 的所有文档 ID
+            # 使用转义处理特殊字符
+            escaped_source = source.replace("\\", "\\\\").replace('"', '\\"')
+            expr = f'source == "{escaped_source}"'
+            print(f"[DEBUG] Delete expr: {expr}")
 
-        print(f"从 {collection_name} 删除了 {result.delete_count} 条记录")
-        return result.delete_count
+            results = collection.query(
+                expr=expr,
+                output_fields=["chunk_id"],
+            )
+
+            if not results:
+                print(f"未找到 source 为 {source} 的文档")
+                return 0
+
+            ids_to_delete = [r["chunk_id"] for r in results]
+            print(f"准备删除 {len(ids_to_delete)} 条记录")
+
+            # 分批删除
+            batch_size = 100
+            total_deleted = 0
+            for i in range(0, len(ids_to_delete), batch_size):
+                batch = ids_to_delete[i : i + batch_size]
+                ids_expr = ", ".join([f'"{id}"' for id in batch])
+                result = collection.delete(f"chunk_id in [{ids_expr}]")
+                total_deleted += result.delete_count
+
+            collection.flush()
+            print(f"从 {collection_name} 删除了 {total_deleted} 条记录")
+            return total_deleted
+
+        except Exception as e:
+            print(f"删除失败: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return 0
 
     def get_collection_stats(self, collection_name: str) -> Dict[str, Any]:
         """获取集合统计信息"""
@@ -296,12 +325,136 @@ class MilvusClientWrapper:
         collection = Collection(collection_name, using=self.alias)
         collection.load()
 
+        # 使用 query 获取实际数量，而不是 num_entities（删除后不会立即更新）
+        try:
+            # 分批查询统计数量（Milvus limit 最大 16384）
+            total_count = 0
+            offset = 0
+            batch_size = 16384
+            while True:
+                results = collection.query(
+                    expr="chunk_id != ''",
+                    output_fields=["chunk_id"],
+                    limit=batch_size,
+                    offset=offset,
+                )
+                batch_count = len(results)
+                total_count += batch_count
+                if batch_count < batch_size:
+                    break
+                offset += batch_size
+            actual_count = total_count
+        except Exception as e:
+            print(f"[WARN] Failed to query collection count: {e}")
+            actual_count = collection.num_entities
+
         return {
             "exists": True,
             "name": collection_name,
-            "count": collection.num_entities,
+            "count": actual_count,
             "schema": str(collection.schema),
         }
+
+    def get_sources(self, collection_name: str) -> List[str]:
+        """获取集合中所有的 source（去重）"""
+        if not self._connected:
+            return []
+
+        if not utility.has_collection(collection_name, using=self.alias):
+            return []
+
+        collection = Collection(collection_name, using=self.alias)
+        collection.load()
+
+        # 分批查询所有文档的 source 字段（Milvus limit 最大 16384）
+        all_results = []
+        offset = 0
+        batch_size = 16384
+        while True:
+            results = collection.query(
+                expr="source != ''",
+                output_fields=["source"],
+                limit=batch_size,
+                offset=offset,
+            )
+            all_results.extend(results)
+            if len(results) < batch_size:
+                break
+            offset += batch_size
+
+        # 去重
+        sources = list(set([r["source"] for r in all_results if r.get("source")]))
+        return sorted(sources)
+
+    def clear_collection(self, collection_name: str) -> int:
+        """清空整个集合的所有文档"""
+        if not self._connected:
+            print(f"警告: Milvus 未连接，无法清空集合")
+            return 0
+
+        if not utility.has_collection(collection_name, using=self.alias):
+            return 0
+
+        collection = Collection(collection_name, using=self.alias)
+        collection.load()
+
+        # 获取删除前的数量
+        before_count = collection.num_entities
+        print(f"集合 {collection_name} 当前有 {before_count} 条记录")
+
+        if before_count == 0:
+            return 0
+
+        # 删除所有数据 - 使用更可靠的表达式
+        try:
+            # 分批查询所有ID（Milvus limit 最大 16384）
+            ids_to_delete = []
+            offset = 0
+            batch_size = 16384
+            while True:
+                results = collection.query(
+                    expr="chunk_id != ''",
+                    output_fields=["chunk_id"],
+                    limit=batch_size,
+                    offset=offset,
+                )
+                ids_to_delete.extend([r["chunk_id"] for r in results])
+                if len(results) < batch_size:
+                    break
+                offset += batch_size
+
+            if not ids_to_delete:
+                return 0
+
+            print(f"准备删除 {len(ids_to_delete)} 条记录")
+
+            # 分批删除（避免一次删除太多）
+            batch_size = 100
+            total_deleted = 0
+            for i in range(0, len(ids_to_delete), batch_size):
+                batch = ids_to_delete[i : i + batch_size]
+                ids_expr = ", ".join([f'"{id}"' for id in batch])
+                result = collection.delete(f"chunk_id in [{ids_expr}]")
+                total_deleted += result.delete_count
+
+            # 强制刷新确保删除生效
+            collection.flush()
+
+            # 重新加载集合以更新统计
+            collection.release()
+            collection.load()
+
+            # 获取删除后的数量
+            after_count = collection.num_entities
+            print(f"清空集合 {collection_name} 完成，删除前: {before_count}, 删除后: {after_count}")
+
+            return total_deleted
+        except Exception as e:
+            print(f"清空集合失败: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return 0
 
     def list_collections(self) -> List[str]:
         """列出所有集合"""
@@ -337,9 +490,7 @@ class MilvusClientWrapperLegacy:
     def create_collection(self, collection_name: str, dimension: int):
         return self._wrapper.create_collection(collection_name, dimension)
 
-    def insert_data(
-        self, collection_name: str, ids: List[int], embeddings: List[List[float]]
-    ):
+    def insert_data(self, collection_name: str, ids: List[int], embeddings: List[List[float]]):
         """旧版插入接口（仅用于兼容）"""
         return self._wrapper.insert_data_with_content(
             collection_name,
@@ -349,9 +500,7 @@ class MilvusClientWrapperLegacy:
             metadatas=["{}"] * len(ids),
         )
 
-    def search(
-        self, collection_name: str, query_embedding: List[float], top_k: int
-    ) -> List[str]:
+    def search(self, collection_name: str, query_embedding: List[float], top_k: int) -> List[str]:
         """旧版搜索接口（仅返回ID）"""
         results = self._wrapper.search(
             collection_name, query_embedding, top_k, output_fields=["chunk_id"]
@@ -399,9 +548,7 @@ if __name__ == "__main__":
         results = client.search(collection_name, [0.1] * 1536, top_k=2)
         print(f"搜索结果: {len(results)} 条")
         for r in results:
-            print(
-                f"  - {r['chunk_id']}: {r['content'][:20]}... (score: {r['score']:.3f})"
-            )
+            print(f"  - {r['chunk_id']}: {r['content'][:20]}... (score: {r['score']:.3f})")
 
         print("\n测试完成!")
 

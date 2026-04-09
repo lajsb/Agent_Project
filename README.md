@@ -1,205 +1,280 @@
 # RAG Agent - 智能知识库助手
 
-一个基于 RAG (Retrieval-Augmented Generation) 技术的智能对话系统，支持文档上传、向量检索和智能问答。
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.12+-blue.svg" alt="Python 3.12+">
+  <img src="https://img.shields.io/badge/Node.js-18+-green.svg" alt="Node.js 18+">
+  <img src="https://img.shields.io/badge/FastAPI-0.115+-009688.svg" alt="FastAPI">
+  <img src="https://img.shields.io/badge/React-18+-61DAFB.svg" alt="React 18">
+  <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
+</p>
 
-## 项目结构
+<p align="center">
+  <b>基于 RAG (Retrieval-Augmented Generation) 技术的智能对话系统</b><br>
+  支持文档上传、向量检索和智能问答，采用自适应查询重写策略
+</p>
 
-```
-rag_plus/
-├── backend/              # 后端服务
-│   ├── src/             # 核心业务逻辑
-│   │   ├── agent.py              # AI Agent 主逻辑
-│   │   ├── rag_graph.py          # RAG 流程图
-│   │   ├── document_processor.py # 文档处理
-│   │   ├── embeddings.py         # 向量嵌入
-│   │   ├── text_splitter.py      # 文本分块
-│   │   ├── document_loaders.py   # 文档加载器
-│   │   └── redis_cache.py        # Redis 缓存
-│   ├── api/             # API 接口
-│   │   ├── main.py              # FastAPI 入口
-│   │   ├── models.py            # 数据模型
-│   │   └── routes/              # API 路由
-│   │       ├── chat.py
-│   │       └── documents.py
-│   ├── db/              # 数据库
-│   │   ├── connection.py        # 数据库连接
-│   │   ├── models/              # ORM 模型
-│   │   ├── repositories/        # 数据仓库
-│   │   └── services/            # 业务服务
-│   └── milvus/          # Milvus 客户端
-│       └── client.py
-├── frontend/            # React 前端
-│   ├── src/
-│   │   ├── api/         # API 客户端
-│   │   ├── components/  # 可复用组件
-│   │   ├── pages/       # 页面组件
-│   │   ├── styles/      # 样式文件
-│   │   ├── types/       # TypeScript 类型
-│   │   └── utils/       # 工具函数
-│   └── package.json
-├── scripts/             # 工具脚本
-│   ├── run_api.py       # 启动后端
-│   └── ingest.py        # 文档导入
-├── tests/               # 测试文件
-│   ├── test_postgres.py
-│   ├── test_ingestion.py
-│   ├── test_memory.py
-│   ├── test_rag.py
-│   └── example_docs/    # 示例文档
-├── docs/                # 项目文档
-│   ├── README.md        # 架构说明
-│   ├── deployment.md    # 部署指南
-│   └── run.md          # 运行指南
-├── docker/              # Docker 配置
-│   └── docker-compose.yml
-├── data/                # 数据卷
-│   └── volumes/         # Docker 数据持久化
-│       ├── postgres/    # PostgreSQL 数据
-│       ├── milvus/      # Milvus 向量数据
-│       ├── minio/       # MinIO 对象存储
-│       └── etcd/        # Etcd 配置数据
-├── .env                 # 环境变量
-├── .env.example         # 环境变量示例
-├── requirements.txt     # Python 依赖
-└── README.md           # 本文件
-```
+---
+
+## 功能特性
+
+-  **智能对话** - 基于 LangGraph 的多轮对话管理，支持会话隔离和历史记录
+-  **文档管理** - 支持 PDF、Word、TXT、Markdown、代码文件等多种格式
+-  **自适应 RAG** - 智能查询重写（Step-back + HyDE），提升检索质量
+-  **向量检索** - 基于 Milvus 的高效相似度搜索
+-  **持久化存储** - PostgreSQL 存储对话历史，支持多用户会话
+-  **现代前端** - React + TypeScript + Tailwind CSS
+
+---
+
+## 技术栈
+
+### 后端
+| 技术 | 用途 |
+|------|------|
+| [FastAPI](https://fastapi.tiangolo.com/) | Web 框架 |
+| [LangGraph](https://langchain-ai.github.io/langgraph/) | AI 工作流编排 |
+| [LangChain](https://python.langchain.com/) | LLM 应用开发 |
+| [Milvus](https://milvus.io/) | 向量数据库 |
+| [PostgreSQL](https://www.postgresql.org/) | 关系数据库 |
+| [SQLAlchemy](https://www.sqlalchemy.org/) | ORM 框架 |
+
+### 前端
+| 技术 | 用途 |
+|------|------|
+| [React 18](https://react.dev/) | UI 框架 |
+| [TypeScript](https://www.typescriptlang.org/) | 类型安全 |
+| [Vite](https://vitejs.dev/) | 构建工具 |
+| [Tailwind CSS](https://tailwindcss.com/) | 样式框架 |
+| [Lucide React](https://lucide.dev/) | 图标库 |
+
+### 基础设施
+| 技术 | 用途 |
+|------|------|
+| [Docker](https://www.docker.com/) | 容器化 |
+| [uv](https://docs.astral.sh/uv/) | Python 包管理 |
+
+---
 
 ## 快速开始
 
-### 1. 环境准备
+### 前置要求
 
 - Python 3.12+
 - Node.js 18+
 - Docker & Docker Compose
 
-### 2. 安装依赖
+### 1. 克隆项目
 
 ```bash
-# Python 依赖
-pip install -r requirements.txt
+git clone https://github.com/yourusername/rag-agent.git
+cd rag-agent
+```
 
-# 前端依赖
+### 2. 配置环境变量
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env` 文件，填入你的 API 密钥：
+
+```env
+# LLM 配置 (支持 OpenAI、Moonshot 等)
+OPENAI_API_KEY=your_api_key_here
+OPENAI_BASE_URL=https://api.openai.com/v1
+LLM_MODEL=gpt-4
+
+# Embedding 配置 (支持 DashScope 等)
+EMBEDDING_API_KEY=your_embedding_key_here
+EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+EMBEDDING_MODEL=text-embedding-v3
+
+# 数据库配置
+DATABASE_URL=postgresql://rag_user:rag_password@localhost:5432/rag_db
+MILVUS_HOST=localhost
+MILVUS_PORT=19530
+```
+
+### 3. 启动基础设施
+
+```bash
+docker-compose -f docker/docker-compose.yml up -d
+```
+
+等待 30-60 秒，检查服务状态：
+
+```bash
+docker ps
+```
+
+### 4. 安装依赖
+
+**Python 依赖（使用 uv）：**
+
+```bash
+# 安装 uv（如果尚未安装）
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 安装项目依赖
+uv sync
+```
+
+**前端依赖：**
+
+```bash
 cd frontend
 npm install
 ```
 
-### 3. 配置环境变量
+### 5. 启动服务
+
+**启动后端：**
 
 ```bash
-cp .env.example .env
-# 编辑 .env 文件，填入你的 API 密钥
+# 在项目根目录执行
+uvicorn backend.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### 4. 启动服务
+
+**启动前端（新终端）：**
 
 ```bash
-# 启动数据库（PostgreSQL + Milvus + MinIO）
-docker-compose -f docker/docker-compose.yml up -d
-
-# 启动后端
-cd scripts
-python run_api.py --reload
-
-# 启动前端（新终端）
 cd frontend
 npm run dev
 ```
 
-### 5. 访问系统
+### 6. 访问系统
 
-- 前端界面: http://localhost:5173
-- API 文档: http://localhost:8000/docs
+| 服务 | 地址 |
+|------|------|
+| 前端界面 | http://localhost:5173 |
+| API 文档 | http://localhost:8000/docs |
+| 健康检查 | http://localhost:8000/health |
 
-## 核心功能
+---
 
-### 1. 智能对话
-- 基于 LangGraph 的多轮对话管理
-- 支持会话隔离和历史记录
-- 自适应 RAG 策略（Step-back + HyDE）
+## 项目结构
 
-### 2. 文档管理
-- 支持 PDF、Word、TXT、Markdown 等格式
-- 拖拽上传或点击选择
-- 自动分块和向量化
-
-### 3. 知识库检索
-- Milvus 向量数据库
-- 相似度搜索 + 重排序
-- 支持多集合管理
-
-### 4. 数据存储
-- PostgreSQL: 对话历史、用户数据
-- Milvus: 文档向量
-- MinIO: 对象存储
-
-## 技术栈
-
-### 后端
-- **框架**: FastAPI + Uvicorn
-- **AI**: LangChain + LangGraph + OpenAI API
-- **数据库**: PostgreSQL + SQLAlchemy
-- **向量库**: Milvus
-- **缓存**: Redis (可选)
-
-### 前端
-- **框架**: React 18 + TypeScript
-- **构建**: Vite
-- **样式**: Tailwind CSS
-- **UI**: Lucide Icons
-
-### 基础设施
-- **容器**: Docker + Docker Compose
-- **向量存储**: Milvus + MinIO + Etcd
-
-## 开发指南
-
-### 添加新的 API 端点
-
-1. 在 `backend/api/routes/` 创建新文件
-2. 在 `backend/api/main.py` 注册路由
-
-### 添加新的文档加载器
-
-1. 在 `backend/src/document_loaders.py` 添加加载函数
-2. 在 `backend/src/document_processor.py` 中使用
-
-### 数据库迁移
-
-```bash
-# 自动创建表（首次运行）
-python -c "
-from backend.db.connection import DatabaseConnection
-from backend.db.models.base import Base
-db = DatabaseConnection()
-db.create_tables(Base)
-"
+```
+rag-agent/
+├── backend/                 # 后端服务
+│   ├── api/                # FastAPI 接口
+│   │   ├── main.py         # 应用入口
+│   │   ├── models.py       # 数据模型
+│   │   └── routes/         # API 路由
+│   │       ├── chat.py     # 对话接口
+│   │       └── documents.py # 文档接口
+│   ├── src/                # 核心业务逻辑
+│   │   ├── agent.py        # AI Agent 主逻辑
+│   │   ├── rag_graph.py    # RAG 工作流
+│   │   ├── document_processor.py  # 文档处理
+│   │   ├── embeddings.py   # 向量嵌入
+│   │   ├── text_splitter.py       # 文本分块
+│   │   └── document_loaders.py    # 文档加载
+│   ├── db/                 # 数据库层
+│   │   ├── models/         # ORM 模型
+│   │   ├── repositories/   # 数据仓库
+│   │   └── services/       # 业务服务
+│   └── milvus/             # Milvus 客户端
+├── frontend/               # React 前端
+│   ├── src/
+│   │   ├── api/            # API 客户端
+│   │   ├── components/     # 可复用组件
+│   │   ├── pages/          # 页面组件
+│   │   ├── types/          # TypeScript 类型
+│   │   └── utils/          # 工具函数
+│   └── package.json
+├── docker/                 # Docker 配置
+│   └── docker-compose.yml
+├── scripts/                # 工具脚本
+│   ├── run_api.py
+│   └── ingest.py
+├── tests/                  # 测试文件
+├── pyproject.toml          # Python 项目配置
+├── uv.lock                 # 依赖锁定文件
+└── .env.example            # 环境变量示例
 ```
 
-## 部署
+---
 
-### 生产环境配置
+## 使用方法
 
-1. 使用 PostgreSQL 而非 SQLite
-2. 配置 Nginx 反向代理
-3. 设置 HTTPS
-4. 配置环境变量（密钥、数据库连接等）
+### 上传文档
 
-详见 [docs/deployment.md](docs/deployment.md)
+1. 打开前端界面 http://localhost:5173
+2. 进入"文档管理"页面
+3. 拖拽或点击上传文件（支持 PDF、Word、TXT、Markdown 等）
+4. 设置分块大小和重叠参数
+5. 点击"开始导入"
 
-## 数据备份
+### 智能对话
+
+1. 进入"对话"页面
+2. 在输入框中输入问题
+3. 系统会自动检索知识库并生成回答
+4. 支持多轮对话，自动保存历史记录
+
+### API 调用示例
 
 ```bash
-# 备份 PostgreSQL
-docker-compose -f docker/docker-compose.yml exec postgres pg_dump -U rag_user rag_db > backup.sql
+# 对话接口
+curl -X POST http://localhost:8000/chat/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "什么是 RAG？",
+    "user_id": "user_123",
+    "session_id": "session_456"
+  }'
 
-# 备份整个数据卷
-tar -czvf data-backup.tar.gz data/volumes/
+# 上传文档
+curl -X POST http://localhost:8000/documents/upload \
+  -F "file=@document.pdf" \
+  -F "chunk_size=1000" \
+  -F "chunk_overlap=200"
+
+# 获取文档统计
+curl http://localhost:8000/documents/stats
 ```
 
-## 许可证
+---
 
-MIT License
+## RAG 工作流程
 
-## 贡献
+```
+用户查询
+    |
+    v
+初始检索 (Milvus 向量搜索)
+    |
+    v
+文档评分 ──→ 相关性足够 ──→ 生成答案
+    |
+    v
+查询重写 (Step-back / HyDE)
+    |
+    v
+扩展检索 ──→ 合并结果 ──→ 生成答案
+```
 
-欢迎提交 Issue 和 Pull Request！
+**查询重写策略：**
+
+- **Step-back**: 退一步思考，从通用概念层面提问
+- **HyDE**: 生成假设的理想回答文档，用于扩展检索
+- **Complex**: 组合策略，结合 Step-back + HyDE
+
+---
+
+
+## 路线图
+
+- [x] 基础 RAG 流程
+- [x] 文档上传和管理
+- [x] 多轮对话支持
+- [x] 自适应查询重写
+- [x] 前端界面
+- [ ] 用户认证系统
+- [ ] 对话分享功能
+- [ ] RAG 评估系统
+- [ ] 多租户支持
+- [ ] 增量文档更新
+

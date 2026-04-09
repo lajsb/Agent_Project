@@ -4,22 +4,31 @@ import { apiClient } from '../api';
 import { Button, Card, StatCard } from '../components';
 import type { CollectionStats } from '../types';
 
+interface DocumentSource {
+  name: string;
+  count: number;
+}
+
 export function DocumentsPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [chunkSize, setChunkSize] = useState(1000);
   const [chunkOverlap, setChunkOverlap] = useState(200);
   const [isLoading, setIsLoading] = useState(false);
   const [collections, setCollections] = useState<CollectionStats[]>([]);
+  const [sources, setSources] = useState<DocumentSource[]>([]);
   const [result, setResult] = useState<{
     success: boolean;
     message: string;
     errors?: string[];
   } | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [clearingCollection, setClearingCollection] = useState<string | null>(null);
+  const [deletingSource, setDeletingSource] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     loadStats();
+    loadSources();
   }, []);
 
   const loadStats = async () => {
@@ -30,6 +39,25 @@ export function DocumentsPage() {
       }
     } catch (error) {
       console.error('Failed to load stats:', error);
+    }
+  };
+
+  const loadSources = async () => {
+    try {
+      // 获取 document_chunks 集合的所有 source
+      const response = await apiClient.getCollectionSources('document_chunks');
+      if (response.success) {
+        // 为每个 source 获取文档数量
+        const sourcesWithCount = await Promise.all(
+          response.sources.map(async (source) => {
+            // 这里简化处理，实际可以添加 API 来获取单个 source 的文档数
+            return { name: source, count: 0 };
+          })
+        );
+        setSources(sourcesWithCount);
+      }
+    } catch (error) {
+      console.error('Failed to load sources:', error);
     }
   };
 
@@ -103,6 +131,7 @@ export function DocumentsPage() {
         });
         clearFile();
         loadStats();
+        loadSources();
       } else {
         setResult({
           success: false,
@@ -121,6 +150,78 @@ export function DocumentsPage() {
   };
 
   const totalDocs = collections.reduce((sum, c) => sum + (c.count || 0), 0);
+
+  const handleClearCollection = async (collectionName: string) => {
+    if (!confirm(`确定要清空集合 "${collectionName}" 吗？此操作不可恢复！`)) {
+      return;
+    }
+
+    setClearingCollection(collectionName);
+    try {
+      const response = await apiClient.clearCollection(collectionName);
+      console.log('[DEBUG] Clear response:', response);
+      if (response.success) {
+        setResult({
+          success: true,
+          message: response.message,
+        });
+        // 延迟刷新以确保数据同步
+        setTimeout(() => {
+          loadStats();
+          loadSources();
+        }, 500);
+      } else {
+        setResult({
+          success: false,
+          message: '清空失败',
+        });
+      }
+    } catch (error) {
+      console.error('Failed to clear collection:', error);
+      setResult({
+        success: false,
+        message: error instanceof Error ? error.message : '清空失败',
+      });
+    } finally {
+      setClearingCollection(null);
+    }
+  };
+
+  const handleDeleteSource = async (source: string) => {
+    const fileName = source.split('\\').pop()?.split('/').pop() || source;
+    if (!confirm(`确定要删除文件 "${fileName}" 吗？此操作不可恢复！`)) {
+      return;
+    }
+
+    setDeletingSource(source);
+    try {
+      const response = await apiClient.deleteDocument({ source });
+      if (response.success) {
+        setResult({
+          success: true,
+          message: response.message,
+        });
+        // 延迟刷新以确保数据同步
+        setTimeout(() => {
+          loadStats();
+          loadSources();
+        }, 500);
+      } else {
+        setResult({
+          success: false,
+          message: '删除失败',
+        });
+      }
+    } catch (error) {
+      console.error('Failed to delete source:', error);
+      setResult({
+        success: false,
+        message: error instanceof Error ? error.message : '删除失败',
+      });
+    } finally {
+      setDeletingSource(null);
+    }
+  };
 
   // 格式化文件大小
   const formatFileSize = (bytes: number): string => {
@@ -148,8 +249,8 @@ export function DocumentsPage() {
         {/* Stats */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <StatCard
-            title="集合数量"
-            value={collections.length}
+            title="文件数量"
+            value={sources.length}
             icon={<Folder className="w-5 h-5 text-apple-blue" />}
           />
           <StatCard
@@ -304,32 +405,57 @@ export function DocumentsPage() {
           )}
         </Card>
 
-        {/* Collections List */}
+        {/* Collections Stats */}
         <div>
-          <h2 className="text-lg font-semibold text-apple-text mb-4">知识库概览</h2>
-          {collections.length > 0 ? (
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold text-apple-text">已上传文件</h2>
+            {sources.length > 0 && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => handleClearCollection('document_chunks')}
+                isLoading={clearingCollection === 'document_chunks'}
+                disabled={clearingCollection === 'document_chunks'}
+              >
+                <Trash2 className="w-4 h-4 mr-1" />
+                清空全部
+              </Button>
+            )}
+          </div>
+          {sources.length > 0 ? (
             <div className="grid grid-cols-1 gap-3">
-              {collections.map((coll) => (
-                <Card
-                  key={coll.name}
-                  className="flex items-center justify-between"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-apple-blue-light flex items-center justify-center">
-                      <Folder className="w-5 h-5 text-apple-blue" />
+              {sources.map((source) => {
+                const fileName = source.name.split('\\').pop()?.split('/').pop() || source.name;
+                return (
+                  <Card
+                    key={source.name}
+                    className="flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-apple-blue-light flex items-center justify-center">
+                        <FileText className="w-5 h-5 text-apple-blue" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-medium text-apple-text truncate" title={fileName}>
+                          {fileName}
+                        </p>
+                        <p className="text-sm text-apple-text-secondary">
+                          {source.count > 0 ? `${source.count} 个片段` : '文档片段'}
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="font-medium text-apple-text">{coll.name}</p>
-                      <p className="text-sm text-apple-text-secondary">
-                        包含 {coll.count?.toLocaleString() || 0} 个文档片段
-                      </p>
-                    </div>
-                  </div>
-                  <Button variant="secondary" size="sm">
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                </Card>
-              ))}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => handleDeleteSource(source.name)}
+                      isLoading={deletingSource === source.name}
+                      disabled={deletingSource === source.name}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </Card>
+                );
+              })}
             </div>
           ) : (
             <Card className="text-center py-12">

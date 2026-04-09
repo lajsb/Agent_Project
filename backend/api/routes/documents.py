@@ -139,6 +139,69 @@ async def delete_documents(request: DeleteDocumentRequest):
         )
 
 
+@router.post("/clear/{collection_name}", summary="清空集合")
+async def clear_collection(collection_name: str):
+    """
+    清空指定集合的所有文档
+
+    - 删除集合中的所有数据
+    - 请谨慎使用，删除后不可恢复
+    """
+    try:
+        print(f"[DEBUG] Clear collection request: {collection_name}")
+        client = get_milvus_client()
+
+        # 先检查集合状态
+        stats_before = client.get_collection_stats(collection_name)
+        print(f"[DEBUG] Stats before clear: {stats_before}")
+
+        deleted_count = client.clear_collection(collection_name)
+
+        # 再检查集合状态
+        stats_after = client.get_collection_stats(collection_name)
+        print(f"[DEBUG] Stats after clear: {stats_after}")
+
+        return {
+            "success": True,
+            "deleted_count": deleted_count,
+            "message": f"成功清空集合 {collection_name}，删除 {deleted_count} 条记录",
+        }
+
+    except Exception as e:
+        print(f"[ERROR] Clear collection failed: {e}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"清空失败: {str(e)}",
+        )
+
+
+@router.get("/sources/{collection_name}", summary="获取集合的文档来源列表")
+async def get_collection_sources(collection_name: str):
+    """
+    获取指定集合中所有文档的来源列表
+
+    - 返回去重后的 source 列表
+    """
+    try:
+        client = get_milvus_client()
+        sources = client.get_sources(collection_name)
+
+        return {
+            "success": True,
+            "collection": collection_name,
+            "sources": sources,
+            "total": len(sources),
+        }
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取来源列表失败: {str(e)}",
+        )
+
+
 @router.get("/collections", summary="列出所有集合")
 async def list_collections():
     """

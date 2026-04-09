@@ -20,15 +20,11 @@ class DashScopeEmbeddings(Embeddings):
         base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
     ):
         self.model = model
-        self.api_key = (
-            api_key or os.getenv("EMBEDDING_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
-        )
+        self.api_key = api_key or os.getenv("EMBEDDING_API_KEY")
         self.base_url = base_url.rstrip("/")
 
         if not self.api_key:
-            raise ValueError(
-                "DashScope API key is required. Set EMBEDDING_API_KEY or DASHSCOPE_API_KEY environment variable."
-            )
+            raise ValueError("API key is required. Set EMBEDDING_API_KEY environment variable.")
 
     def _embed(self, texts: List[str]) -> List[List[float]]:
         """调用 DashScope API 获取 embeddings"""
@@ -60,6 +56,20 @@ class DashScopeEmbeddings(Embeddings):
             embeddings = sorted(data["data"], key=lambda x: x.get("index", 0))
             return [item["embedding"] for item in embeddings]
 
+        except requests.exceptions.HTTPError as e:
+            # 打印详细的错误信息
+            print(f"[ERROR] DashScope API 请求失败")
+            print(f"  URL: {url}")
+            print(f"  Model: {self.model}")
+            print(f"  Texts count: {len(texts)}")
+            print(f"  First text length: {len(texts[0]) if texts else 0}")
+            try:
+                error_detail = response.json()
+                print(f"  Response: {error_detail}")
+            except:
+                print(f"  Response text: {response.text}")
+            raise ValueError(f"DashScope API request failed: {e}")
+
         except requests.exceptions.RequestException as e:
             raise ValueError(f"DashScope API request failed: {e}")
 
@@ -75,8 +85,8 @@ class DashScopeEmbeddings(Embeddings):
         if not texts:
             return []
 
-        # DashScope 每次最多支持 25 条，需要分批处理
-        batch_size = 25
+        # DashScope 每次最多支持 10 条，需要分批处理
+        batch_size = 10
         all_embeddings = []
 
         for i in range(0, len(texts), batch_size):
