@@ -54,3 +54,6 @@ Thumbs.db
 
 # Node (if frontend has node_modules)
 node_modules/
+
+# Database volumes - DO NOT upload
+data/
