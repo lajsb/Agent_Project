@@ -14,29 +14,37 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from backend.src.embeddings import DashScopeEmbeddings
+from backend.src.sparse_embeddings import (
+    BM25SparseVectorGenerator,
+    convert_to_milvus_sparse_format,
+    get_bm25_generator,
+)
 from dotenv import load_dotenv
 
 from langchain_core.documents import Document
 from backend.src.document_loaders import load_document, load_directory
 from backend.src.text_splitter import TextChunk, get_splitter_for_document
+from scipy import sparse
+import numpy as np
 
 load_dotenv()
 
 
 @dataclass
 class ProcessedChunk:
-    """处理后的块数据"""
+    """处理后的块数据（支持稠密向量和稀疏向量）"""
 
     chunk_id: str
     content: str
-    embedding: List[float]
+    embedding: List[float]  # 稠密向量
     metadata: Dict[str, Any]
     source_doc: str
     chunk_index: int
+    sparse_embedding: Optional[Dict] = None  # 稀疏向量（Milvus格式）
 
 
 class DocumentProcessor:
-    """文档处理器 - 完整的文档处理管道"""
+    """文档处理器 - 完整的文档处理管道（支持混合向量）"""
 
     def __init__(
         self,
@@ -44,10 +52,12 @@ class DocumentProcessor:
         chunk_overlap: int = 200,
         embedding_model: str = "text-embedding-3-small",
         batch_size: int = 100,
+        enable_sparse: bool = True,
     ):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.batch_size = batch_size
+        self.enable_sparse = enable_sparse
 
         # 初始化 embedding 模型 - 使用 DashScope
         self.embeddings = DashScopeEmbeddings(
@@ -58,6 +68,11 @@ class DocumentProcessor:
                 "https://dashscope.aliyuncs.com/compatible-mode/v1",
             ),
         )
+
+        # 初始化 BM25 生成器
+        self.bm25_generator: Optional[BM25SparseVectorGenerator] = None
+        if enable_sparse:
+            self.bm25_generator = get_bm25_generator()
 
     def process_file(
         self, file_path: str, custom_metadata: Optional[Dict] = None
@@ -173,17 +188,41 @@ class DocumentProcessor:
         return chunks
 
     def _generate_embeddings(self, chunks: List[TextChunk], source: str) -> List[ProcessedChunk]:
-        """为块生成向量（单批次）"""
+        """为块生成向量（稠密向量 + 稀疏向量）"""
         if not chunks:
             return []
 
-        # 批量生成向量
+        # 批量生成稠密向量
         texts = [chunk.content for chunk in chunks]
         embeddings = self.embeddings.embed_documents(texts)
 
+        # 生成稀疏向量（如果启用）
+        sparse_embeddings = None
+        if self.enable_sparse and self.bm25_generator:
+            try:
+                # 确保 BM25 模型已训练
+                if self.bm25_generator.retriever is None:
+                    print("  训练 BM25 模型...")
+                    self.bm25_generator.fit(texts)
+
+                # 生成稀疏向量
+                sparse_dicts = self.bm25_generator.encode_documents_batch(texts)
+                sparse_embeddings = [
+                    convert_to_milvus_sparse_format(sparse_dict) for sparse_dict in sparse_dicts
+                ]
+                print(
+                    f"  生成稀疏向量: {len(sparse_embeddings)} 个, 类型: {type(sparse_embeddings[0]) if sparse_embeddings else 'N/A'}"
+                )
+            except Exception as e:
+                print(f"  生成稀疏向量失败: {e}")
+                import traceback
+
+                traceback.print_exc()
+                sparse_embeddings = None
+
         # 创建处理后的块
         processed = []
-        for chunk, embedding in zip(chunks, embeddings):
+        for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
             processed.append(
                 ProcessedChunk(
                     chunk_id=chunk.chunk_id,
@@ -192,6 +231,7 @@ class DocumentProcessor:
                     metadata=chunk.metadata,
                     source_doc=source,
                     chunk_index=chunk.index,
+                    sparse_embedding=sparse_embeddings[i] if sparse_embeddings else None,
                 )
             )
 
@@ -261,10 +301,14 @@ class DocumentStore:
         # 准备 Milvus 数据
         milvus_ids = []
         milvus_embeddings = []
+        milvus_sparse_embeddings = []
         milvus_contents = []
         milvus_metadatas = []
         milvus_sources = []
         milvus_doc_types = []
+
+        has_sparse = False
+        max_sparse_dim = 1  # 跟踪最大维度
 
         for chunk in chunks:
             try:
@@ -274,25 +318,61 @@ class DocumentStore:
                 milvus_metadatas.append(json.dumps(chunk.metadata, ensure_ascii=False))
                 milvus_sources.append(chunk.source_doc)
                 milvus_doc_types.append(chunk.metadata.get("doc_type", "text"))
+
+                # 收集稀疏向量
+                if chunk.sparse_embedding is not None:
+                    milvus_sparse_embeddings.append(chunk.sparse_embedding)
+                    if hasattr(chunk.sparse_embedding, "shape"):
+                        max_sparse_dim = max(max_sparse_dim, chunk.sparse_embedding.shape[1])
+                    has_sparse = True
+                else:
+                    # 暂存 None，稍后统一创建空矩阵
+                    milvus_sparse_embeddings.append(None)
+
                 stored_count += 1
             except Exception as e:
                 errors.append(f"处理块 {chunk.chunk_id} 失败: {e}")
 
+        # 为 None 的项创建空稀疏矩阵（统一维度）
+        for i, emb in enumerate(milvus_sparse_embeddings):
+            if emb is None:
+                milvus_sparse_embeddings[i] = sparse.csr_matrix(
+                    (1, max_sparse_dim), dtype=np.float32
+                )
+
         # 存入 Milvus
         try:
-            self.milvus.insert_data_with_content(
-                collection_name="document_chunks",
-                ids=milvus_ids,
-                embeddings=milvus_embeddings,
-                contents=milvus_contents,
-                metadatas=milvus_metadatas,
-                sources=milvus_sources,
-                doc_types=milvus_doc_types,
+            # 检查集合是否有稀疏向量字段
+            from pymilvus import Collection
+
+            collection = Collection("document_chunks")
+            has_sparse_field = any(
+                field.name == "sparse_embedding" for field in collection.schema.fields
             )
-            print(f"成功存入 {len(milvus_ids)} 个向量到 Milvus")
+
+            insert_kwargs = {
+                "collection_name": "document_chunks",
+                "ids": milvus_ids,
+                "embeddings": milvus_embeddings,
+                "contents": milvus_contents,
+                "metadatas": milvus_metadatas,
+                "sources": milvus_sources,
+                "doc_types": milvus_doc_types,
+            }
+
+            # 如果集合支持稀疏向量字段，传递稀疏向量
+            if has_sparse_field:
+                insert_kwargs["sparse_embeddings"] = milvus_sparse_embeddings
+
+            self.milvus.insert_data_with_content(**insert_kwargs)
+            vector_info = "稠密+稀疏" if has_sparse_field else "稠密"
+            print(f"成功存入 {len(milvus_ids)} 个向量到 Milvus ({vector_info})")
         except Exception as e:
             errors.append(f"Milvus 存储失败: {e}")
             print(f"Milvus 存储错误: {e}")
+            import traceback
+
+            traceback.print_exc()
 
         return {
             "stored_count": stored_count,

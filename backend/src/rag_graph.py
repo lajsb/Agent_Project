@@ -3,9 +3,15 @@ from langchain.chat_models import init_chat_model
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
 from backend.src.embeddings import DashScopeEmbeddings
+from backend.src.sparse_embeddings import (
+    convert_to_milvus_sparse_format,
+    get_bm25_generator,
+)
 import json
 import os
 from dotenv import load_dotenv
+from scipy import sparse
+import numpy as np
 
 load_dotenv()
 
@@ -86,26 +92,59 @@ hyde_llm = llm.with_structured_output(HypotheticalDoc)
 # ==================== 节点函数实现 ====================
 
 
-def retrieve_initial(state: RAGstate) -> RAGstate:
+def retrieve_initial(state: RAGstate, use_hybrid: bool = True) -> RAGstate:
     """
-    初始检索节点：将问题转换为向量并检索最相似的文档
+    初始检索节点：使用混合检索（稠密向量 + BM25稀疏向量）检索文档
     """
     question = state["question"]
 
-    # 生成查询向量
-    query_embedding = embeddings.embed_query(question)
+    # 生成查询稠密向量
+    query_dense_embedding = embeddings.embed_query(question)
 
     # 从Milvus检索
     try:
-        # 使用新的 Milvus 客户端
         from backend.milvus.client import get_milvus_client
 
         client = get_milvus_client()
 
-        # 检索向量相似的文档
-        results = client.search(
-            collection_name="document_chunks", query_embedding=query_embedding, top_k=5
-        )
+        if use_hybrid:
+            # 生成查询稀疏向量（BM25）
+            try:
+                from backend.src.sparse_embeddings import (
+                    get_bm25_generator,
+                    convert_to_milvus_sparse_format,
+                )
+                from scipy import sparse
+                import numpy as np
+
+                bm25_generator = get_bm25_generator()
+                # 尝试编码查询，如果模型未训练则使用空向量
+                if bm25_generator.retriever is not None:
+                    sparse_dict = bm25_generator.encode_query(question)
+                    query_sparse_embedding = convert_to_milvus_sparse_format(sparse_dict)
+                else:
+                    # 创建空稀疏矩阵
+                    query_sparse_embedding = sparse.csr_matrix((1, 1), dtype=np.float32)
+            except Exception as e:
+                print(f"BM25编码失败，回退到稠密检索: {e}")
+                query_sparse_embedding = sparse.csr_matrix((1, 1), dtype=np.float32)
+
+            # 使用混合检索
+            results = client.hybrid_search(
+                collection_name="document_chunks",
+                query_dense_embedding=query_dense_embedding,
+                query_sparse_embedding=query_sparse_embedding,
+                top_k=5,
+            )
+            retrieval_type = "hybrid"
+        else:
+            # 使用纯稠密检索
+            results = client.search(
+                collection_name="document_chunks",
+                query_embedding=query_dense_embedding,
+                top_k=5,
+            )
+            retrieval_type = "dense"
 
         # 构建文档列表
         docs = []
@@ -114,7 +153,8 @@ def retrieve_initial(state: RAGstate) -> RAGstate:
                 {
                     "id": result["chunk_id"],
                     "content": result["content"],
-                    "score": result["score"],
+                    "score": result.get("score", 0.0),
+                    "rrf_score": result.get("rrf_score"),
                     "metadata": json.loads(result.get("metadata", "{}")),
                     "source": result.get("source", ""),
                     "doc_type": result.get("doc_type", "text"),
@@ -126,12 +166,16 @@ def retrieve_initial(state: RAGstate) -> RAGstate:
         state["query"] = question
         state["rag_trace"] = {
             "step": "initial_retrieval",
+            "retrieval_type": retrieval_type,
             "query": question,
             "retrieved_count": len(docs),
         }
 
     except Exception as e:
         print(f"Retrieval error: {e}")
+        import traceback
+
+        traceback.print_exc()
         state["docs"] = []
         state["rag_trace"] = {"step": "initial_retrieval", "error": str(e)}
 
@@ -364,28 +408,55 @@ def _apply_complex_strategy(state: RAGstate, question: str) -> RAGstate:
     return state
 
 
-def retrieve_expanded(state: RAGstate) -> RAGstate:
+def retrieve_expanded(state: RAGstate, use_hybrid: bool = True) -> RAGstate:
     """
-    扩展检索节点：使用重写后的查询进行更精确的检索
+    扩展检索节点：使用重写后的查询进行混合检索
     """
     expanded_query = state.get("expanded_query", state["question"])
     original_docs = state.get("graded_docs", [])
 
-    # 生成扩展查询的向量
-    query_embedding = embeddings.embed_query(expanded_query)
+    # 生成扩展查询的稠密向量
+    query_dense_embedding = embeddings.embed_query(expanded_query)
 
     try:
-        # 使用新的 Milvus 客户端
         from backend.milvus.client import get_milvus_client
 
         client = get_milvus_client()
 
-        # 使用扩展查询进行检索（增加top_k以获取更多候选）
-        results = client.search(
-            collection_name="document_chunks",
-            query_embedding=query_embedding,
-            top_k=10,  # 获取更多结果以便筛选
-        )
+        if use_hybrid:
+            # 生成查询稀疏向量（BM25）
+            try:
+                from backend.src.sparse_embeddings import (
+                    get_bm25_generator,
+                    convert_to_milvus_sparse_format,
+                )
+                from scipy import sparse
+                import numpy as np
+
+                bm25_generator = get_bm25_generator()
+                if bm25_generator.retriever is not None:
+                    sparse_dict = bm25_generator.encode_query(expanded_query)
+                    query_sparse_embedding = convert_to_milvus_sparse_format(sparse_dict)
+                else:
+                    query_sparse_embedding = sparse.csr_matrix((1, 1), dtype=np.float32)
+            except Exception as e:
+                print(f"BM25编码失败，回退到稠密检索: {e}")
+                query_sparse_embedding = sparse.csr_matrix((1, 1), dtype=np.float32)
+
+            # 使用混合检索
+            results = client.hybrid_search(
+                collection_name="document_chunks",
+                query_dense_embedding=query_dense_embedding,
+                query_sparse_embedding=query_sparse_embedding,
+                top_k=10,  # 获取更多结果以便筛选
+            )
+        else:
+            # 使用纯稠密检索
+            results = client.search(
+                collection_name="document_chunks",
+                query_embedding=query_dense_embedding,
+                top_k=10,
+            )
 
         # 构建新文档列表
         new_docs = []

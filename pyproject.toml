@@ -8,12 +8,18 @@ dependencies = [
     # 基础依赖
     "langchain>=0.1.0",
     "langchain-openai>=0.0.5",
+    "langchain-community>=0.0.20",
     "langgraph>=0.0.40",
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
     
-    # 向量数据库
-    "pymilvus>=2.3.0",
+    # 向量数据库 - 2.4.0+ 支持稀疏向量
+    "pymilvus>=2.4.0",
+    
+    # 稀疏检索 - BM25
+    "bm25s>=0.1.0",
+    "PyStemmer>=2.2.0",
+    "scipy>=1.10.0",
     
     # 缓存
     "redis>=5.0.0",

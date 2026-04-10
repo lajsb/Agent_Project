@@ -7,7 +7,11 @@ from pymilvus import (
     DataType,
     Collection,
     utility,
+    AnnSearchRequest,
+    RRFRanker,
 )
+from scipy import sparse
+import numpy as np
 from typing import List, Optional, Dict, Any
 import numpy as np
 import os
@@ -91,12 +95,18 @@ class MilvusClientWrapper:
                 max_length=64,
                 description="文档块唯一标识",
             ),
-            # 向量字段
+            # 稠密向量字段
             FieldSchema(
                 name="embedding",
                 dtype=DataType.FLOAT_VECTOR,
                 dim=dimension,
-                description="文本向量",
+                description="文本稠密向量（语义匹配）",
+            ),
+            # 稀疏向量字段 - 用于 BM25 关键词匹配
+            FieldSchema(
+                name="sparse_embedding",
+                dtype=DataType.SPARSE_FLOAT_VECTOR,
+                description="文本稀疏向量（BM25 关键词匹配）",
             ),
             # 内容字段
             FieldSchema(
@@ -139,14 +149,25 @@ class MilvusClientWrapper:
         # 创建集合
         collection = Collection(name=collection_name, schema=schema, using=self.alias)
 
-        # 创建索引
-        index_params = {
+        # 为稠密向量创建索引
+        dense_index_params = {
             "metric_type": metric_type,
             "index_type": "IVF_FLAT",  # 或 HNSW 以获得更好性能
             "params": {"nlist": 1024},
         }
-        collection.create_index(field_name="embedding", index_params=index_params)
+        collection.create_index(field_name="embedding", index_params=dense_index_params)
+
+        # 为稀疏向量创建索引
+        sparse_index_params = {
+            "metric_type": "IP",  # 内积，适合稀疏向量
+            "index_type": "SPARSE_INVERTED_INDEX",
+            "params": {"drop_ratio_build": 0.2},
+        }
+        collection.create_index(field_name="sparse_embedding", index_params=sparse_index_params)
+
         print(f"集合 {collection_name} 创建成功，维度: {dimension}")
+        print(f"  - 稠密向量索引: IVF_FLAT ({metric_type})")
+        print(f"  - 稀疏向量索引: SPARSE_INVERTED_INDEX (IP)")
 
         return collection
 
@@ -159,18 +180,20 @@ class MilvusClientWrapper:
         metadatas: Optional[List[str]] = None,
         sources: Optional[List[str]] = None,
         doc_types: Optional[List[str]] = None,
+        sparse_embeddings: Optional[List[Dict]] = None,
     ):
         """
-        插入数据到集合
+        插入数据到集合（支持稠密向量和稀疏向量）
 
         Args:
             collection_name: 集合名称
             ids: 文档块ID列表
-            embeddings: 向量列表
+            embeddings: 稠密向量列表
             contents: 内容列表
             metadatas: 元数据JSON字符串列表
             sources: 来源列表
             doc_types: 文档类型列表
+            sparse_embeddings: 稀疏向量列表（Milvus格式: {"indices": [], "values": []}）
         """
         if not self._connected:
             print(f"警告: Milvus 未连接，无法插入数据")
@@ -181,21 +204,68 @@ class MilvusClientWrapper:
 
         collection = Collection(collection_name, using=self.alias)
 
+        # 检查集合是否有稀疏向量字段
+        has_sparse_field = any(
+            field.name == "sparse_embedding" for field in collection.schema.fields
+        )
+
         # 准备数据
-        data = [
-            ids,
-            embeddings,
-            contents,
-            metadatas or ["{}"] * len(ids),
-            sources or [""] * len(ids),
-            doc_types or ["text"] * len(ids),
-        ]
+        print(
+            f"[DEBUG] has_sparse_field={has_sparse_field}, sparse_embeddings={len(sparse_embeddings) if sparse_embeddings else 0}"
+        )
+        if has_sparse_field and sparse_embeddings is not None and len(sparse_embeddings) > 0:
+            # 支持稀疏向量的新 schema
+            # 将所有稀疏向量合并成一个大的 csr_matrix (n_docs x max_dim)
+            # 获取所有向量的最大维度
+            max_dim = max(mat.shape[1] if hasattr(mat, "shape") else 1 for mat in sparse_embeddings)
+
+            # 调整每个矩阵的维度
+            adjusted_mats = []
+            for mat in sparse_embeddings:
+                if hasattr(mat, "shape"):
+                    if mat.shape[1] < max_dim:
+                        mat = sparse.hstack(
+                            [
+                                mat,
+                                sparse.csr_matrix(
+                                    (mat.shape[0], max_dim - mat.shape[1]), dtype=np.float32
+                                ),
+                            ]
+                        )
+                    adjusted_mats.append(mat)
+                else:
+                    # 如果是空向量，创建零矩阵
+                    adjusted_mats.append(sparse.csr_matrix((1, max_dim), dtype=np.float32))
+
+            # 垂直堆叠所有矩阵
+            combined_sparse = sparse.vstack(adjusted_mats, format="csr")
+
+            data = [
+                ids,
+                embeddings,
+                combined_sparse,
+                contents,
+                metadatas or ["{}"] * len(ids),
+                sources or [""] * len(ids),
+                doc_types or ["text"] * len(ids),
+            ]
+        else:
+            # 仅稠密向量的旧 schema（向后兼容）
+            data = [
+                ids,
+                embeddings,
+                contents,
+                metadatas or ["{}"] * len(ids),
+                sources or [""] * len(ids),
+                doc_types or ["text"] * len(ids),
+            ]
 
         # 插入数据
         insert_result = collection.insert(data)
         collection.flush()
 
-        print(f"成功插入 {len(ids)} 条数据到 {collection_name}")
+        vector_type = "稠密+稀疏" if (has_sparse_field and sparse_embeddings) else "稠密"
+        print(f"成功插入 {len(ids)} 条数据到 {collection_name} ({vector_type})")
         return insert_result
 
     def search(
@@ -207,11 +277,11 @@ class MilvusClientWrapper:
         output_fields: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        向量搜索
+        稠密向量搜索（保持向后兼容）
 
         Args:
             collection_name: 集合名称
-            query_embedding: 查询向量
+            query_embedding: 查询稠密向量
             top_k: 返回结果数量
             filter_expr: 过滤表达式
             output_fields: 返回的字段
@@ -258,6 +328,107 @@ class MilvusClientWrapper:
                     "doc_type": hit.entity.get("doc_type"),
                     "distance": hit.distance,
                     "score": 1 - hit.distance if hit.distance <= 1 else 1 / (1 + hit.distance),
+                }
+                formatted_results.append(result)
+
+        return formatted_results
+
+    def hybrid_search(
+        self,
+        collection_name: str,
+        query_dense_embedding: List[float],
+        query_sparse_embedding,
+        top_k: int = 5,
+        filter_expr: Optional[str] = None,
+        output_fields: Optional[List[str]] = None,
+        rrf_k: float = 60.0,
+    ) -> List[Dict[str, Any]]:
+        """
+        混合检索 - 结合稠密向量和稀疏向量（BM25）
+        使用 Milvus 原生 RRF 融合结果
+
+        Args:
+            collection_name: 集合名称
+            query_dense_embedding: 查询稠密向量
+            query_sparse_embedding: 查询稀疏向量（scipy.sparse.csr_matrix 格式）
+            top_k: 返回结果数量
+            filter_expr: 过滤表达式
+            output_fields: 返回的字段
+            rrf_k: RRF 融合参数
+
+        Returns:
+            融合后的搜索结果列表
+        """
+        if not self._connected:
+            print(f"警告: Milvus 未连接，无法执行搜索")
+            return []
+
+        if not utility.has_collection(collection_name, using=self.alias):
+            raise ValueError(f"集合 {collection_name} 不存在")
+
+        collection = Collection(collection_name, using=self.alias)
+        collection.load()
+
+        # 检查是否有稀疏向量字段
+        has_sparse_field = any(
+            field.name == "sparse_embedding" for field in collection.schema.fields
+        )
+
+        # 如果没有稀疏向量字段，回退到纯稠密检索
+        if not has_sparse_field:
+            print("集合不支持稀疏向量，回退到稠密检索")
+            return self.search(
+                collection_name, query_dense_embedding, top_k, filter_expr, output_fields
+            )
+
+        # 默认返回字段
+        if output_fields is None:
+            output_fields = ["chunk_id", "content", "metadata", "source", "doc_type"]
+
+        # 构建稠密向量搜索请求
+        dense_search_params = {"metric_type": "COSINE", "params": {"nprobe": 10}}
+        dense_req = AnnSearchRequest(
+            data=[query_dense_embedding],
+            anns_field="embedding",
+            param=dense_search_params,
+            limit=top_k * 2,  # 获取更多结果用于融合
+            expr=filter_expr,
+        )
+
+        # 构建稀疏向量搜索请求
+        sparse_search_params = {"metric_type": "IP", "params": {}}
+        sparse_req = AnnSearchRequest(
+            data=[query_sparse_embedding],
+            anns_field="sparse_embedding",
+            param=sparse_search_params,
+            limit=top_k * 2,
+            expr=filter_expr,
+        )
+
+        # 使用 RRF 融合
+        rerank = RRFRanker(k=rrf_k)
+
+        # 执行混合搜索
+        results = collection.hybrid_search(
+            reqs=[dense_req, sparse_req],
+            rerank=rerank,
+            limit=top_k,
+            output_fields=output_fields,
+        )
+
+        # 格式化结果
+        formatted_results = []
+        for hits in results:
+            for hit in hits:
+                result = {
+                    "chunk_id": hit.entity.get("chunk_id"),
+                    "content": hit.entity.get("content"),
+                    "metadata": hit.entity.get("metadata"),
+                    "source": hit.entity.get("source"),
+                    "doc_type": hit.entity.get("doc_type"),
+                    "distance": hit.distance,
+                    "score": hit.score if hasattr(hit, "score") else (1 - hit.distance),
+                    "rrf_score": hit.score if hasattr(hit, "score") else None,
                 }
                 formatted_results.append(result)
 
