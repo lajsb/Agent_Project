@@ -213,6 +213,19 @@ class MilvusClientWrapper:
         print(
             f"[DEBUG] has_sparse_field={has_sparse_field}, sparse_embeddings={len(sparse_embeddings) if sparse_embeddings else 0}"
         )
+
+        # 如果集合有稀疏向量字段但没有提供稀疏向量数据，创建默认的空稀疏向量
+        if has_sparse_field and (sparse_embeddings is None or len(sparse_embeddings) == 0):
+            # 创建默认稀疏向量（带一个极小非零值避免Milvus报错）
+            from scipy import sparse
+            import numpy as np
+
+            sparse_embeddings = [
+                sparse.csr_matrix(([1e-10], ([0], [0])), shape=(1, 1), dtype=np.float32)
+                for _ in range(len(ids))
+            ]
+            print(f"[DEBUG] 创建默认稀疏向量: {len(sparse_embeddings)} 个")
+
         if has_sparse_field and sparse_embeddings is not None and len(sparse_embeddings) > 0:
             # 支持稀疏向量的新 schema
             # 将所有稀疏向量合并成一个大的 csr_matrix (n_docs x max_dim)
@@ -332,6 +345,48 @@ class MilvusClientWrapper:
                 formatted_results.append(result)
 
         return formatted_results
+
+    def get_all_contents(self, collection_name: str, batch_size: int = 1000) -> List[str]:
+        """
+        获取集合中所有文档的内容
+
+        Args:
+            collection_name: 集合名称
+            batch_size: 每批次查询数量
+
+        Returns:
+            所有文档内容列表
+        """
+        if not self._connected:
+            print(f"警告: Milvus 未连接，无法获取数据")
+            return []
+
+        if not utility.has_collection(collection_name, using=self.alias):
+            raise ValueError(f"集合 {collection_name} 不存在")
+
+        collection = Collection(collection_name, using=self.alias)
+        collection.load()
+
+        # 获取总数
+        stats = self.get_collection_stats(collection_name)
+        total = stats.get("count", 0)
+
+        if total == 0:
+            return []
+
+        # 分批查询所有内容
+        all_contents = []
+        for offset in range(0, total, batch_size):
+            results = collection.query(
+                expr="chunk_id != ''",  # 查询所有
+                output_fields=["content"],
+                limit=batch_size,
+                offset=offset,
+            )
+            all_contents.extend([r.get("content", "") for r in results])
+
+        print(f"从 {collection_name} 获取了 {len(all_contents)} 条文档内容")
+        return all_contents
 
     def hybrid_search(
         self,

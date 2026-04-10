@@ -72,7 +72,7 @@ class BM25SparseVectorGenerator:
             text: 文档文本
 
         Returns:
-            稀疏向量字典 {token_id: weight}
+            稀疏向量字典 {token_id(唯一标识): weight(出现次数)}
         """
         if self.retriever is None:
             raise ValueError("BM25 模型尚未训练，请先调用 fit()")
